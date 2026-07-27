@@ -14,7 +14,7 @@ Most Delta tables store their parquet files with snappy compression. The php sna
 ## Installation
 
 ```
-composer require deltasharing/client
+composer require wapcaf/delta-sharing-php
 ```
 
 To read table rows directly in PHP, also install the parquet decoder:

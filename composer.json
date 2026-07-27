@@ -1,8 +1,19 @@
 {
-    "name": "deltasharing/client",
+    "name": "wapcaf/delta-sharing-php",
     "description": "PHP connector for the Delta Sharing open protocol",
     "type": "library",
     "license": "MIT",
+    "homepage": "https://github.com/wapcaf/delta-sharing-php",
+    "authors": [
+        {
+            "name": "Jake Macklin",
+            "email": "jake.macklin@cruisenation.com"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/wapcaf/delta-sharing-php/issues",
+        "source": "https://github.com/wapcaf/delta-sharing-php"
+    },
     "keywords": [
         "delta-sharing",
         "delta-lake",
