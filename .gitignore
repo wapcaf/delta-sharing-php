@@ -2,4 +2,6 @@
 composer.lock
 .phpunit.cache/
 .phpunit.result.cache
-*.local.share
+.env
+*.share
+!examples/open-datasets.share

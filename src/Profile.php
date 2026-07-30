@@ -74,4 +74,24 @@ final class Profile
 
         return $expiresAt !== false && $expiresAt <= time();
     }
+
+    /**
+     * Whether the credentials expire within the given interval from now.
+     * Useful for warning about tokens that are about to lapse.
+     */
+    public function expiresWithin(\DateInterval $interval): bool
+    {
+        if ($this->expirationTime === null) {
+            return false;
+        }
+
+        $expiresAt = strtotime($this->expirationTime);
+        if ($expiresAt === false) {
+            return false;
+        }
+
+        $threshold = (new \DateTimeImmutable())->add($interval)->getTimestamp();
+
+        return $expiresAt <= $threshold;
+    }
 }

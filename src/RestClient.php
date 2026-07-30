@@ -6,6 +6,7 @@ namespace DeltaSharing;
 
 use DeltaSharing\Exception\DeltaSharingException;
 use DeltaSharing\Exception\HttpException;
+use DeltaSharing\Exception\ProtocolException;
 use DeltaSharing\Model\FileAction;
 use DeltaSharing\Model\Metadata;
 use DeltaSharing\Model\Protocol;
@@ -15,6 +16,7 @@ use DeltaSharing\Model\Share;
 use DeltaSharing\Model\Table;
 use DeltaSharing\Model\TableMetadata;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\HandlerStack;
 use Psr\Http\Message\ResponseInterface;
 
 /**
@@ -28,18 +30,32 @@ final class RestClient
 {
     public const USER_AGENT = 'delta-sharing-php/' . DeltaSharingClient::VERSION;
 
+    /**
+     * Sent on every request so servers that support multiple response formats
+     * always answer with parquet file actions, which is what this client reads.
+     */
+    public const CAPABILITIES = 'responseformat=parquet';
+
     private GuzzleClient $http;
 
     public function __construct(
         private readonly Profile $profile,
         ?GuzzleClient $http = null
     ) {
-        $this->http = $http ?? new GuzzleClient([
-            'base_uri' => $profile->endpoint . '/',
-            'http_errors' => false,
-            'timeout' => 120,
-            'verify' => \Composer\CaBundle\CaBundle::getSystemCaRootBundlePath(),
-        ]);
+        if ($http === null) {
+            $stack = HandlerStack::create();
+            $stack->push(RetryMiddleware::create(), 'retry');
+
+            $http = new GuzzleClient([
+                'base_uri' => $profile->endpoint . '/',
+                'handler' => $stack,
+                'http_errors' => false,
+                'timeout' => 120,
+                'verify' => \Composer\CaBundle\CaBundle::getSystemCaRootBundlePath(),
+            ]);
+        }
+
+        $this->http = $http;
     }
 
     public function profile(): Profile
@@ -261,6 +277,7 @@ final class RestClient
         $options['headers'] = array_merge($options['headers'] ?? [], [
             'Authorization' => 'Bearer ' . $this->profile->bearerToken,
             'User-Agent' => self::USER_AGENT,
+            'delta-sharing-capabilities' => self::CAPABILITIES,
         ]);
 
         try {
@@ -278,7 +295,14 @@ final class RestClient
                 ? $decoded['message']
                 : ($body !== '' ? $body : "HTTP {$status}");
 
-            throw new HttpException($status, $errorCode, "Request to {$path} failed with HTTP {$status}: {$message}");
+            $retryAfter = $response->getHeaderLine('Retry-After');
+
+            throw HttpException::fromStatus(
+                $status,
+                is_string($errorCode) ? $errorCode : null,
+                "Request to {$path} failed with HTTP {$status}: {$message}",
+                is_numeric($retryAfter) ? (int) $retryAfter : null
+            );
         }
 
         return $response;
@@ -290,7 +314,7 @@ final class RestClient
     private function parseNdjson(ResponseInterface $response): array
     {
         $lines = [];
-        foreach (explode("\n", (string) $response->getBody()) as $line) {
+        foreach (explode("\n", (string) $response->getBody()) as $number => $line) {
             $line = trim($line);
             if ($line === '') {
                 continue;
@@ -298,7 +322,9 @@ final class RestClient
 
             $decoded = json_decode($line, true);
             if (!is_array($decoded)) {
-                throw new DeltaSharingException('Server returned a malformed NDJSON line: ' . substr($line, 0, 200));
+                throw new ProtocolException(
+                    sprintf('Server returned a malformed NDJSON line %d: %s', $number + 1, substr($line, 0, 200))
+                );
             }
 
             $lines[] = $decoded;
@@ -325,7 +351,13 @@ final class RestClient
         }
 
         if ($protocol === null || $metadata === null) {
-            throw new DeltaSharingException('Server response is missing the protocol or metaData action');
+            throw new ProtocolException('Server response is missing the protocol or metaData action');
+        }
+
+        if ($protocol->minReaderVersion > 1) {
+            throw new ProtocolException(
+                "Table requires minReaderVersion {$protocol->minReaderVersion}, this client supports version 1"
+            );
         }
 
         return [$protocol, $metadata];

@@ -58,6 +58,8 @@ final class RestClientTest extends TestCase
         $request = $this->history[0]['request'];
         $this->assertSame('Bearer test-token', $request->getHeaderLine('Authorization'));
         $this->assertSame('/delta-sharing/shares', $request->getUri()->getPath());
+        $this->assertSame('responseformat=parquet', $request->getHeaderLine('delta-sharing-capabilities'));
+        $this->assertStringStartsWith('delta-sharing-php/', $request->getHeaderLine('User-Agent'));
     }
 
     public function testPaginationIsDrainedByHighLevelClient(): void

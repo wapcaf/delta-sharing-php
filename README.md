@@ -4,12 +4,10 @@ A PHP client for the [Delta Sharing](https://github.com/delta-io/delta-sharing) 
 
 ## Requirements
 
-- PHP 8.1 or newer with ext-json
-- [codename/parquet](https://packagist.org/packages/codename/parquet) (optional) to decode table data into PHP arrays; it needs ext-gmp and ext-bcmath
+- PHP 8.2, 8.3 or 8.4
+- ext-json, ext-bcmath and ext-zlib (all bundled with PHP on most platforms)
 
-Without the parquet package you can still list shares, schemas and tables, read table metadata and versions, and fetch the pre-signed data file URLs to hand off to another system.
-
-Most Delta tables store their parquet files with snappy compression. The php snappy extension is awkward to install on Windows, so this package ships a pure PHP snappy decoder that is used automatically when ext-snappy is not loaded. On Windows, enable `extension=gmp` in php.ini (the DLL ships with PHP) before installing codename/parquet.
+Parquet decoding is handled by [flow-php/parquet](https://packagist.org/packages/flow-php/parquet), a pure PHP implementation installed automatically with this package. Snappy compressed files are decoded with a pure PHP snappy implementation, so no extra extensions are needed on any platform, including Windows.
 
 ## Installation
 
@@ -17,10 +15,17 @@ Most Delta tables store their parquet files with snappy compression. The php sna
 composer require wapcaf/delta-sharing-php
 ```
 
-To read table rows directly in PHP, also install the parquet decoder:
+Until the package is published on Packagist, install it straight from GitHub by adding a VCS repository to your project's composer.json:
 
-```
-composer require codename/parquet
+```json
+{
+    "repositories": [
+        { "type": "vcs", "url": "https://github.com/wapcaf/delta-sharing-php" }
+    ],
+    "require": {
+        "wapcaf/delta-sharing-php": "^0.2"
+    }
+}
 ```
 
 ## Getting a profile
@@ -50,6 +55,18 @@ $rows = DeltaSharing::loadAsArray(
 );
 
 print_r($rows[0]);
+```
+
+For large tables, stream rows with a generator instead. Files are downloaded and decoded one at a time, so memory use stays flat:
+
+```php
+use DeltaSharing\DeltaSharingClient;
+
+$client = DeltaSharingClient::fromProfileFile('examples/open-datasets.share');
+
+foreach ($client->readTable('delta_sharing.default.owid-covid-data', limit: 1000) as $row) {
+    // each $row is an associative array, partition columns included
+}
 ```
 
 ## Discovering shares, schemas and tables
@@ -120,6 +137,35 @@ foreach ($changes['actions'] as $action) {
 ## Time travel
 
 Both `queryTable` and `DeltaSharing::loadAsArray` accept a version number to read a snapshot of the table as of that version. `queryTable` also accepts an ISO 8601 timestamp.
+
+## Error handling and retries
+
+Transient failures (connection errors, HTTP 429 and 5xx) are retried automatically with exponential backoff and jitter, honouring any Retry-After header. Once retries are exhausted, or for non-retryable errors, a typed exception is thrown:
+
+```php
+use DeltaSharing\Exception\AuthenticationException;  // 401 / 403
+use DeltaSharing\Exception\NotFoundException;        // 404
+use DeltaSharing\Exception\RateLimitException;       // 429, exposes retryAfterSeconds
+use DeltaSharing\Exception\ServerException;          // 5xx
+use DeltaSharing\Exception\ProtocolException;        // malformed server response
+use DeltaSharing\Exception\HttpException;            // any other HTTP error
+use DeltaSharing\Exception\DeltaSharingException;    // base class of everything above
+
+try {
+    $client->getTableMetadata('my_share.my_schema.missing_table');
+} catch (NotFoundException $e) {
+    echo $e->statusCode, ' ', $e->errorCode, ' ', $e->getMessage();
+}
+```
+
+Profiles expose their expiry so applications can warn before a token lapses:
+
+```php
+$profile = DeltaSharing\Profile::fromFile('config.share');
+
+if ($profile->isExpired()) { /* request new credentials */ }
+if ($profile->expiresWithin(new DateInterval('P7D'))) { /* warn */ }
+```
 
 ## Protocol coverage
 
