@@ -19,28 +19,25 @@
         "delta-lake",
         "databricks",
         "data-sharing",
-        "lakehouse"
+        "lakehouse",
+        "parquet"
     ],
     "require": {
-        "php": ">=8.1",
+        "php": "~8.2.0 || ~8.3.0 || ~8.4.0",
+        "ext-bcmath": "*",
         "ext-json": "*",
+        "ext-zlib": "*",
         "composer/ca-bundle": "^1.5",
+        "flow-php/parquet": "~0.28.0",
         "guzzlehttp/guzzle": "^7.5"
     },
     "require-dev": {
-        "phpunit/phpunit": "^10.5",
-        "codename/parquet": "^0.7"
-    },
-    "suggest": {
-        "codename/parquet": "Needed to decode parquet data files into PHP arrays (requires ext-gmp)"
+        "phpunit/phpunit": "^10.5"
     },
     "autoload": {
         "psr-4": {
             "DeltaSharing\\": "src/"
-        },
-        "files": [
-            "src/snappy_polyfill.php"
-        ]
+        }
     },
     "autoload-dev": {
         "psr-4": {

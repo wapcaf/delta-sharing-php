@@ -54,6 +54,42 @@ final class ProfileTest extends TestCase
         $this->assertTrue($profile->isExpired());
     }
 
+    public function testExpiresWithin(): void
+    {
+        $soon = (new \DateTimeImmutable('+2 days'))->format(DATE_ATOM);
+        $profile = Profile::fromArray([
+            'endpoint' => 'https://sharing.example.com',
+            'bearerToken' => 'abc',
+            'expirationTime' => $soon,
+        ]);
+
+        $this->assertFalse($profile->isExpired());
+        $this->assertTrue($profile->expiresWithin(new \DateInterval('P7D')));
+        $this->assertFalse($profile->expiresWithin(new \DateInterval('PT1H')));
+    }
+
+    public function testExpiresWithinWithoutExpirationTime(): void
+    {
+        $profile = Profile::fromArray([
+            'endpoint' => 'https://sharing.example.com',
+            'bearerToken' => 'abc',
+        ]);
+
+        $this->assertFalse($profile->expiresWithin(new \DateInterval('P365D')));
+    }
+
+    public function testToleratesUnknownProfileKeys(): void
+    {
+        $profile = Profile::fromArray([
+            'shareCredentialsVersion' => 1,
+            'endpoint' => 'https://sharing.example.com',
+            'bearerToken' => 'abc',
+            'icebergEndpoint' => 'https://sharing.example.com/iceberg',
+        ]);
+
+        $this->assertSame('abc', $profile->bearerToken);
+    }
+
     public function testRejectsUnsupportedVersion(): void
     {
         $this->expectException(DeltaSharingException::class);
