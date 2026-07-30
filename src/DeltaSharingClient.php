@@ -20,7 +20,7 @@ use DeltaSharing\Model\TableMetadata;
  */
 final class DeltaSharingClient
 {
-    public const VERSION = '0.1.0';
+    public const VERSION = '0.2.0';
 
     public function __construct(private readonly RestClient $rest)
     {
@@ -143,6 +143,24 @@ final class DeltaSharingClient
             $startingTimestamp,
             $endingTimestamp
         );
+    }
+
+    /**
+     * Streams the rows of a table, downloading and decoding its parquet
+     * files one at a time. See TableReader::readRows() for the details.
+     *
+     * @param string[] $predicateHints
+     * @return \Generator<int, array<string, mixed>>
+     */
+    public function readTable(
+        Table|string $table,
+        ?int $limit = null,
+        array $predicateHints = [],
+        ?int $version = null
+    ): \Generator {
+        $reader = new TableReader($this->rest, $this->resolveTable($table));
+
+        return $reader->readRows($limit, $predicateHints, $version);
     }
 
     private function resolveTable(Table|string $table): Table
