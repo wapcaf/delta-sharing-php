@@ -15,19 +15,6 @@ Parquet decoding is handled by [flow-php/parquet](https://packagist.org/packages
 composer require wapcaf/delta-sharing-php
 ```
 
-Until the package is published on Packagist, install it straight from GitHub by adding a VCS repository to your project's composer.json:
-
-```json
-{
-    "repositories": [
-        { "type": "vcs", "url": "https://github.com/wapcaf/delta-sharing-php" }
-    ],
-    "require": {
-        "wapcaf/delta-sharing-php": "^0.2"
-    }
-}
-```
-
 ## Getting a profile
 
 Access to a Delta Sharing server is granted through a profile file, a small JSON document that the data provider sends you:
