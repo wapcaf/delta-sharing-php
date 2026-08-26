@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.1
+
+Field findings from reading a Databricks (Azure) share.
+
+- A missing compression extension (zstd, lz4 or brotli) now raises a
+  `DeltaSharingException` naming the extension and the affected data file,
+  instead of flow-php's bare `RuntimeException`. Databricks writers commonly
+  produce zstd-compressed parquet, which pure PHP cannot decode; install
+  ext-zstd where Databricks shares are read.
+- Documented and shipped a workaround for INT96 (legacy Spark) timestamps on
+  flow-php/parquet 0.28, the last release supporting PHP 8.2: the bundled
+  `patches/flow-php-parquet-0.28-int96-flatvalue.patch` lets the INT96 bytes
+  reach the reader's DateTime converter instead of dying on a typehint in the
+  Dremel layer. See the README for composer-patches wiring.
+
 ## 0.2.0
 
 Parquet decoding is now built in and pure PHP.

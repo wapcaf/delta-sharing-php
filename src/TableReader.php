@@ -14,7 +14,9 @@ use GuzzleHttp\Client as GuzzleClient;
 /**
  * Downloads the parquet files behind a shared table and decodes them into
  * associative arrays using flow-php/parquet, which is pure PHP and needs no
- * extensions beyond bcmath and zlib.
+ * extensions beyond bcmath and zlib for snappy- or gzip-compressed files.
+ * Files compressed with zstd, lz4 or brotli additionally need the matching
+ * PECL extension; Databricks writers commonly produce zstd.
  *
  * Partition column values are not stored inside the parquet files, so they
  * are merged into every row from the partitionValues of each file action.
@@ -128,8 +130,24 @@ final class TableReader
             }
 
             $parquet = (new ParquetReader())->read($localPath);
-            foreach ($parquet->values([], $limit) as $row) {
-                yield $row + $partitionValues;
+            try {
+                foreach ($parquet->values([], $limit) as $row) {
+                    yield $row + $partitionValues;
+                }
+            } catch (\RuntimeException $e) {
+                // flow-php stubs zstd/lz4/brotli functions to throw when the
+                // extension is missing; surface that as an actionable error.
+                if (str_contains($e->getMessage(), 'extension is not available')) {
+                    throw new DeltaSharingException(
+                        "Data file {$file->id} uses a compression codec whose PHP extension is not installed"
+                        . " ({$e->getMessage()}). Databricks writers commonly produce zstd-compressed parquet;"
+                        . ' install the matching PECL extension (for zstd: kjdev/php-ext-zstd) and retry.',
+                        0,
+                        $e
+                    );
+                }
+
+                throw $e;
             }
         } finally {
             @unlink($localPath);

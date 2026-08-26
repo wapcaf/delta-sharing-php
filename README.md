@@ -9,6 +9,30 @@ A PHP client for the [Delta Sharing](https://github.com/delta-io/delta-sharing) 
 
 Parquet decoding is handled by [flow-php/parquet](https://packagist.org/packages/flow-php/parquet), a pure PHP implementation installed automatically with this package. Snappy compressed files are decoded with a pure PHP snappy implementation, so no extra extensions are needed on any platform, including Windows.
 
+### Compression codecs
+
+Snappy and gzip parquet files decode with no extra extensions. Files compressed with **zstd**, lz4 or brotli need the matching PECL extension ([kjdev/php-ext-zstd](https://github.com/kjdev/php-ext-zstd) publishes Windows DLLs for zstd). Databricks writers commonly produce zstd, so plan for that extension when reading Databricks shares; without it the connector raises a `DeltaSharingException` naming the missing extension.
+
+### Known issue: INT96 timestamps on PHP 8.2
+
+Some writers (Spark and Databricks in legacy timestamp mode) store timestamps as the deprecated INT96 physical type. flow-php/parquet 0.28, the last release that supports PHP 8.2, fails on such files with `FlatValue::__construct(): Argument #4 ($value) must be of type string|int|float|bool|null, Bytes given` because the INT96 bytes reach the Dremel layer before the DateTime converter runs. On PHP 8.3+ simply use a newer flow-php/parquet. On PHP 8.2, apply [patches/flow-php-parquet-0.28-int96-flatvalue.patch](patches/flow-php-parquet-0.28-int96-flatvalue.patch) with [cweagans/composer-patches](https://github.com/cweagans/composer-patches) from your project's composer.json:
+
+```json
+{
+    "require": { "cweagans/composer-patches": "^1.7" },
+    "config": { "allow-plugins": { "cweagans/composer-patches": true } },
+    "extra": {
+        "patches": {
+            "flow-php/parquet": {
+                "INT96 timestamps on flow-php 0.28": "vendor/wapcaf/delta-sharing-php/patches/flow-php-parquet-0.28-int96-flatvalue.patch"
+            }
+        }
+    }
+}
+```
+
+(Or copy the patch file into your own repo and point the entry there, which avoids depending on vendor paths.) With the patch applied, INT96 values decode to `DateTimeImmutable` as normal.
+
 ## Installation
 
 ```
