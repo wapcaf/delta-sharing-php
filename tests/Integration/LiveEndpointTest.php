@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DeltaSharing\Tests\Integration;
 
 use DeltaSharing\DeltaSharingClient;
+use DeltaSharing\Exception\UnsupportedTableTypeException;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -39,8 +40,11 @@ final class LiveEndpointTest extends TestCase
 
         $table = $tables[0];
 
-        $version = $this->client->getTableVersion($table);
-        $this->assertGreaterThanOrEqual(0, $version);
+        try {
+            $this->assertGreaterThanOrEqual(0, $this->client->getTableVersion($table));
+        } catch (UnsupportedTableTypeException) {
+            // A shared view: it has no version, but metadata and data still work.
+        }
 
         $metadata = $this->client->getTableMetadata($table);
         $this->assertNotSame('', $metadata->metadata->id);

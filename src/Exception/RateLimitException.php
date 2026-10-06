@@ -13,8 +13,9 @@ class RateLimitException extends HttpException
         int $statusCode,
         ?string $errorCode,
         string $message,
-        public readonly ?int $retryAfterSeconds = null
+        public readonly ?int $retryAfterSeconds = null,
+        ?string $requestId = null
     ) {
-        parent::__construct($statusCode, $errorCode, $message);
+        parent::__construct($statusCode, $errorCode, $message, $requestId);
     }
 }

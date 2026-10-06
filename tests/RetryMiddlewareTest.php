@@ -6,14 +6,31 @@ namespace DeltaSharing\Tests;
 
 use DeltaSharing\RetryMiddleware;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class RetryMiddlewareTest extends TestCase
 {
+    private const TIMEOUT_MESSAGE = 'cURL error 28: Operation timed out after 120001 milliseconds'
+        . ' with 0 bytes received';
+
     private MockHandler $mock;
+
+    private static function request(): Request
+    {
+        return new Request('GET', 'https://sharing.example.com/delta-sharing/shares');
+    }
+
+    private static function timeout(): ConnectException
+    {
+        return new ConnectException(self::TIMEOUT_MESSAGE, self::request(), null, ['errno' => 28]);
+    }
 
     private function clientWithResponses(Response ...$responses): GuzzleClient
     {
@@ -73,6 +90,74 @@ final class RetryMiddlewareTest extends TestCase
 
         $this->assertSame(500, $response->getStatusCode());
         $this->assertSame(0, $this->mock->count(), 'Every queued response should have been consumed');
+    }
+
+    public function testConnectionErrorsUseTheFullRetryBudget(): void
+    {
+        $decide = RetryMiddleware::decider(maxRetries: 4, maxTimeoutRetries: 0);
+        $refused = new ConnectException('cURL error 7: Failed to connect', self::request(), null, ['errno' => 7]);
+
+        foreach ([0, 1, 2, 3] as $retries) {
+            $this->assertTrue($decide($retries, self::request(), null, $refused), "Retry {$retries} should happen");
+        }
+        $this->assertFalse($decide(4, self::request(), null, $refused));
+    }
+
+    public function testTimeoutIsRetriedOnceByDefault(): void
+    {
+        $decide = RetryMiddleware::decider();
+
+        $this->assertTrue($decide(0, self::request(), null, self::timeout()), 'The first timeout is retried');
+        $this->assertFalse($decide(1, self::request(), null, self::timeout()), 'A second timeout is final');
+    }
+
+    public function testTimeoutRetriesCanBeDisabled(): void
+    {
+        $decide = RetryMiddleware::decider(maxTimeoutRetries: 0);
+
+        $this->assertFalse($decide(0, self::request(), null, self::timeout()));
+    }
+
+    public function testTimeoutAfterAnotherRetryUsesUpTheTimeoutBudget(): void
+    {
+        $decide = RetryMiddleware::decider();
+
+        $this->assertTrue($decide(0, self::request(), new Response(503)));
+        $this->assertFalse(
+            $decide(1, self::request(), null, self::timeout()),
+            'Timeouts are only retried within the first maxTimeoutRetries retries'
+        );
+    }
+
+    public function testTimeoutBudgetNeverExceedsMaxRetries(): void
+    {
+        $decide = RetryMiddleware::decider(maxRetries: 1, maxTimeoutRetries: 3);
+
+        $this->assertTrue($decide(0, self::request(), null, self::timeout()));
+        $this->assertFalse($decide(1, self::request(), null, self::timeout()));
+    }
+
+    /**
+     * @return array<string, array{0: \Throwable, 1: bool}>
+     */
+    public static function failures(): array
+    {
+        return [
+            'cURL timeout' => [self::timeout(), true],
+            'stream handler timeout' => [new ConnectException('Connection timed out', self::request()), true],
+            'cURL connection refused' => [
+                new ConnectException('cURL error 7: Failed to connect', self::request(), null, ['errno' => 7]),
+                false,
+            ],
+            'request error' => [new RequestException('Operation timed out', self::request()), false],
+            'other error' => [new \RuntimeException('timed out'), false],
+        ];
+    }
+
+    #[DataProvider('failures')]
+    public function testRecognisesTimeouts(\Throwable $failure, bool $isTimeout): void
+    {
+        $this->assertSame($isTimeout, RetryMiddleware::isTimeout($failure));
     }
 
     public function testDelayHonoursRetryAfterHeader(): void

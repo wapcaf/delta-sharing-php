@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DeltaSharing;
 
+use DeltaSharing\Exception\UnsupportedTableTypeException;
 use DeltaSharing\Model\FileAction;
 use DeltaSharing\Model\QueryResult;
 use DeltaSharing\Model\Schema;
@@ -20,20 +21,24 @@ use DeltaSharing\Model\TableMetadata;
  */
 final class DeltaSharingClient
 {
-    public const VERSION = '0.2.0';
+    /**
+     * The package version, sent in the User-Agent header. Bump it together
+     * with the CHANGELOG for every release.
+     */
+    public const VERSION = '0.3.0';
 
     public function __construct(private readonly RestClient $rest)
     {
     }
 
-    public static function fromProfileFile(string $path): self
+    public static function fromProfileFile(string $path, ?ClientOptions $options = null): self
     {
-        return new self(new RestClient(Profile::fromFile($path)));
+        return self::fromProfile(Profile::fromFile($path), $options);
     }
 
-    public static function fromProfile(Profile $profile): self
+    public static function fromProfile(Profile $profile, ?ClientOptions $options = null): self
     {
-        return new self(new RestClient($profile));
+        return new self(new RestClient($profile, null, $options));
     }
 
     public function rest(): RestClient
@@ -81,6 +86,10 @@ final class DeltaSharingClient
         return $this->drainPages(fn (?string $token) => $this->rest->listAllTables($shareName, null, $token));
     }
 
+    /**
+     * @throws UnsupportedTableTypeException when the shared object has no
+     *     version, as with views shared from Databricks
+     */
     public function getTableVersion(Table|string $table, ?string $startingTimestamp = null): int
     {
         return $this->rest->getTableVersion($this->resolveTable($table), $startingTimestamp);

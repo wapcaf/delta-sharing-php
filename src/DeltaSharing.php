@@ -16,9 +16,9 @@ final class DeltaSharing
     {
     }
 
-    public static function client(string $profilePath): DeltaSharingClient
+    public static function client(string $profilePath, ?ClientOptions $options = null): DeltaSharingClient
     {
-        return DeltaSharingClient::fromProfileFile($profilePath);
+        return DeltaSharingClient::fromProfileFile($profilePath, $options);
     }
 
     /**
@@ -33,9 +33,10 @@ final class DeltaSharing
         string $tableUrl,
         ?int $limit = null,
         array $predicateHints = [],
-        ?int $version = null
+        ?int $version = null,
+        ?ClientOptions $options = null
     ): array {
-        return TableReader::forTableUrl($tableUrl)->rows($limit, $predicateHints, $version);
+        return TableReader::forTableUrl($tableUrl, $options)->rows($limit, $predicateHints, $version);
     }
 
     /**
@@ -44,8 +45,8 @@ final class DeltaSharing
      *
      * @return Model\FileAction[]
      */
-    public static function listFiles(string $tableUrl, ?int $limitHint = null): array
+    public static function listFiles(string $tableUrl, ?int $limitHint = null, ?ClientOptions $options = null): array
     {
-        return TableReader::forTableUrl($tableUrl)->query([], $limitHint)->files;
+        return TableReader::forTableUrl($tableUrl, $options)->query([], $limitHint)->files;
     }
 }

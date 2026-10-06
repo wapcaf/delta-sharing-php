@@ -11,6 +11,10 @@ namespace DeltaSharing\Model;
  */
 final class FileAction
 {
+    /**
+     * @param ?int $expirationTimestamp When the pre-signed url stops working,
+     *     in milliseconds since the Unix epoch, if the server said.
+     */
     public function __construct(
         public readonly string $type,
         public readonly string $url,
@@ -37,6 +41,16 @@ final class FileAction
             isset($data['timestamp']) ? (int) $data['timestamp'] : null,
             isset($data['expirationTimestamp']) ? (int) $data['expirationTimestamp'] : null
         );
+    }
+
+    /**
+     * Whether the pre-signed url has passed its expirationTimestamp. Always
+     * false when the server did not send one.
+     */
+    public function isExpired(): bool
+    {
+        return $this->expirationTimestamp !== null
+            && $this->expirationTimestamp <= (int) floor(microtime(true) * 1000);
     }
 
     /**

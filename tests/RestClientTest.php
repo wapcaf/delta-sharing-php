@@ -4,15 +4,20 @@ declare(strict_types=1);
 
 namespace DeltaSharing\Tests;
 
+use DeltaSharing\ClientOptions;
 use DeltaSharing\DeltaSharingClient;
+use DeltaSharing\Exception\DeltaSharingException;
 use DeltaSharing\Exception\HttpException;
+use DeltaSharing\Exception\TimeoutException;
 use DeltaSharing\Model\Table;
 use DeltaSharing\Profile;
 use DeltaSharing\RestClient;
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\TestCase;
 
@@ -21,7 +26,15 @@ final class RestClientTest extends TestCase
     /** @var array<int, array{request: \Psr\Http\Message\RequestInterface}> */
     private array $history = [];
 
-    private function clientWithResponses(Response ...$responses): RestClient
+    private function profile(): Profile
+    {
+        return Profile::fromArray([
+            'endpoint' => 'https://sharing.example.com/delta-sharing',
+            'bearerToken' => 'test-token',
+        ]);
+    }
+
+    private function clientWithResponses(Response|\Throwable ...$responses): RestClient
     {
         $this->history = [];
         $mock = new MockHandler($responses);
@@ -34,12 +47,22 @@ final class RestClientTest extends TestCase
             'http_errors' => false,
         ]);
 
-        $profile = Profile::fromArray([
-            'endpoint' => 'https://sharing.example.com/delta-sharing',
-            'bearerToken' => 'test-token',
-        ]);
+        return new RestClient($this->profile(), $http);
+    }
 
-        return new RestClient($profile, $http);
+    /**
+     * A transport failure shaped like the ones Guzzle's cURL handler raises.
+     */
+    private function connectError(int $errno, string $error): ConnectException
+    {
+        $url = 'https://sharing.example.com/delta-sharing/shares';
+
+        return new ConnectException(
+            "cURL error {$errno}: {$error} (see https://curl.se/libcurl/c/libcurl-errors.html) for {$url}",
+            new Request('GET', $url),
+            null,
+            ['errno' => $errno]
+        );
     }
 
     public function testListSharesSendsBearerToken(): void
@@ -200,6 +223,71 @@ final class RestClientTest extends TestCase
         $query = $this->history[0]['request']->getUri()->getQuery();
         $this->assertStringContainsString('startingVersion=0', $query);
         $this->assertStringContainsString('endingVersion=3', $query);
+    }
+
+    public function testTimeoutRaisesTimeoutException(): void
+    {
+        $rest = $this->clientWithResponses(
+            $this->connectError(28, 'Operation timed out after 120001 milliseconds with 0 bytes received')
+        );
+
+        try {
+            $rest->listShares();
+            $this->fail('Expected a TimeoutException');
+        } catch (TimeoutException $e) {
+            $this->assertStringStartsWith('Request to shares timed out.', $e->getMessage());
+            $this->assertStringContainsString('ClientOptions', $e->getMessage());
+            $this->assertStringContainsString('Operation timed out after 120001 milliseconds', $e->getMessage());
+            $this->assertInstanceOf(ConnectException::class, $e->getPrevious());
+        }
+    }
+
+    public function testOtherTransportErrorsAreNotTimeouts(): void
+    {
+        $rest = $this->clientWithResponses($this->connectError(6, 'Could not resolve host: sharing.example.com'));
+
+        try {
+            $rest->listShares();
+            $this->fail('Expected a DeltaSharingException');
+        } catch (DeltaSharingException $e) {
+            $this->assertNotInstanceOf(TimeoutException::class, $e);
+            $this->assertStringContainsString('Could not resolve host', $e->getMessage());
+        }
+    }
+
+    public function testDefaultClientAppliesTimeoutsAndRetriesATimeoutOnce(): void
+    {
+        $timeout = $this->connectError(28, 'Operation timed out after 300001 milliseconds with 0 bytes received');
+        $mock = new MockHandler([$timeout, $timeout, new Response(200, [], json_encode(['items' => []]))]);
+        $options = new ClientOptions(timeout: 300, connectTimeout: 5);
+        $profile = $this->profile();
+
+        $rest = new RestClient($profile, RestClient::createHttpClient($profile, $options, $mock), $options);
+
+        try {
+            $rest->listShares();
+            $this->fail('Expected a TimeoutException');
+        } catch (TimeoutException) {
+            // Expected: the first timeout was retried, the second one was final.
+        }
+
+        $this->assertSame(1, $mock->count(), 'Exactly two attempts, the queued success is never reached');
+        $this->assertSame(300.0, $mock->getLastOptions()['timeout']);
+        $this->assertSame(5.0, $mock->getLastOptions()['connect_timeout']);
+    }
+
+    public function testDefaultClientTargetsTheProfileEndpoint(): void
+    {
+        $mock = new MockHandler([new Response(200, [], json_encode(['items' => []]))]);
+        $profile = $this->profile();
+        $rest = new RestClient($profile, RestClient::createHttpClient($profile, new ClientOptions(), $mock));
+
+        $rest->listShares();
+
+        $this->assertSame(
+            'https://sharing.example.com/delta-sharing/shares',
+            (string) $mock->getLastRequest()->getUri()
+        );
     }
 
     public function testHttpErrorsRaiseTypedException(): void

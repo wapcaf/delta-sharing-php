@@ -7,6 +7,8 @@ namespace DeltaSharing;
 use DeltaSharing\Exception\DeltaSharingException;
 use DeltaSharing\Exception\HttpException;
 use DeltaSharing\Exception\ProtocolException;
+use DeltaSharing\Exception\TimeoutException;
+use DeltaSharing\Exception\UnsupportedTableTypeException;
 use DeltaSharing\Model\FileAction;
 use DeltaSharing\Model\Metadata;
 use DeltaSharing\Model\Protocol;
@@ -36,31 +38,56 @@ final class RestClient
      */
     public const CAPABILITIES = 'responseformat=parquet';
 
-    private GuzzleClient $http;
+    private readonly GuzzleClient $http;
 
+    private readonly ClientOptions $options;
+
+    /**
+     * @param ?GuzzleClient $http Replaces the default HTTP client. REST calls
+     *     then follow that client's own timeouts and retries, while $options
+     *     still applies to data file downloads.
+     */
     public function __construct(
         private readonly Profile $profile,
-        ?GuzzleClient $http = null
+        ?GuzzleClient $http = null,
+        ?ClientOptions $options = null
     ) {
-        if ($http === null) {
-            $stack = HandlerStack::create();
-            $stack->push(RetryMiddleware::create(), 'retry');
+        $this->options = $options ?? new ClientOptions();
+        $this->http = $http ?? self::createHttpClient($profile, $this->options);
+    }
 
-            $http = new GuzzleClient([
-                'base_uri' => $profile->endpoint . '/',
-                'handler' => $stack,
-                'http_errors' => false,
-                'timeout' => 120,
-                'verify' => \Composer\CaBundle\CaBundle::getSystemCaRootBundlePath(),
-            ]);
-        }
+    /**
+     * Builds the HTTP client used when none is passed to the constructor:
+     * the profile endpoint as base uri, the configured timeouts, retries for
+     * transient failures and the system CA bundle. A custom handler replaces
+     * the transport, for example a MockHandler in tests.
+     */
+    public static function createHttpClient(
+        Profile $profile,
+        ClientOptions $options,
+        ?callable $handler = null
+    ): GuzzleClient {
+        $stack = HandlerStack::create($handler);
+        $stack->push(RetryMiddleware::create($options->maxRetries, $options->maxTimeoutRetries), 'retry');
 
-        $this->http = $http;
+        return new GuzzleClient([
+            'base_uri' => $profile->endpoint . '/',
+            'handler' => $stack,
+            'http_errors' => false,
+            'timeout' => $options->timeout,
+            'connect_timeout' => $options->connectTimeout,
+            'verify' => \Composer\CaBundle\CaBundle::getSystemCaRootBundlePath(),
+        ]);
     }
 
     public function profile(): Profile
     {
         return $this->profile;
+    }
+
+    public function options(): ClientOptions
+    {
+        return $this->options;
     }
 
     /**
@@ -125,6 +152,10 @@ final class RestClient
         ];
     }
 
+    /**
+     * @throws UnsupportedTableTypeException when the shared object has no
+     *     version, as with views shared from Databricks
+     */
     public function getTableVersion(Table $table, ?string $startingTimestamp = null): int
     {
         $query = $startingTimestamp !== null ? ['startingTimestamp' => $startingTimestamp] : [];
@@ -283,25 +314,28 @@ final class RestClient
         try {
             $response = $this->http->request($method, $path, $options);
         } catch (\Throwable $e) {
+            if (RetryMiddleware::isTimeout($e)) {
+                throw new TimeoutException(
+                    "Request to {$path} timed out. If the server needs longer to respond, raise the timeout"
+                    . " in ClientOptions. {$e->getMessage()}",
+                    0,
+                    $e
+                );
+            }
+
             throw new DeltaSharingException("Request to {$path} failed: {$e->getMessage()}", 0, $e);
         }
 
-        $status = $response->getStatusCode();
-        if ($status >= 400) {
-            $body = (string) $response->getBody();
-            $decoded = json_decode($body, true);
-            $errorCode = is_array($decoded) ? ($decoded['errorCode'] ?? null) : null;
-            $message = is_array($decoded) && isset($decoded['message'])
-                ? $decoded['message']
-                : ($body !== '' ? $body : "HTTP {$status}");
-
+        if ($response->getStatusCode() >= 400) {
+            $error = ErrorResponse::fromResponse($response);
             $retryAfter = $response->getHeaderLine('Retry-After');
 
             throw HttpException::fromStatus(
-                $status,
-                is_string($errorCode) ? $errorCode : null,
-                "Request to {$path} failed with HTTP {$status}: {$message}",
-                is_numeric($retryAfter) ? (int) $retryAfter : null
+                $error->statusCode,
+                $error->errorCode,
+                "Request to {$path} failed with {$error->summary()}",
+                is_numeric($retryAfter) ? (int) $retryAfter : null,
+                $error->requestId
             );
         }
 

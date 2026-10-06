@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.3.0
+
+Field findings from reading a view shared from Databricks.
+
+- New `ClientOptions` for the HTTP behaviour: REST timeout (default 120 s,
+  as before), connect timeout (30 s, previously unset), data file download
+  timeout (300 s, as before) and retry limits. Pass it to
+  `DeltaSharingClient::fromProfile()` or `fromProfileFile()`,
+  `DeltaSharing::client()`, `loadAsArray()` or `listFiles()`,
+  `TableReader::forTableUrl()` or the `RestClient` constructor, instead of
+  building a Guzzle handler stack. `RestClient::createHttpClient()` and
+  `TableReader::createDownloader()` build the default clients.
+- Timeouts now have their own retry budget, `maxTimeoutRetries`, one retry
+  by default where they previously got up to four like any connection
+  error. A request that timed out may still be running on the server
+  (Databricks materialises a shared view on its first query after a data
+  refresh), and every retry starts that work again. The final timeout
+  raises the new `TimeoutException`.
+- Failed data file downloads raise the new `DownloadException`, an
+  `HttpException` carrying the storage service's status, error code,
+  message and request id. Databricks Files API errors report their
+  `google.rpc.ErrorInfo` reason (such as `FILES_API_AZURE_FORBIDDEN`) and
+  the XML errors of Azure Blob Storage, Amazon S3 and Google Cloud Storage
+  are understood. The message used to blame URL expiry for every failure;
+  expiry is now only suggested when the URL's `expirationTimestamp` has
+  passed or the storage service says so, and `urlExpired` tells callers
+  when re-running the query will help.
+- Exception messages never include the query string of a pre-signed URL,
+  which carries its signature. This includes connection errors during
+  downloads, which previously escaped as raw Guzzle exceptions quoting the
+  full URL; they now raise `TimeoutException` or `DeltaSharingException`.
+- Databricks rejects version requests for shared views with
+  `DS_UNSUPPORTED_TABLE_TYPE`, now raised as the new
+  `UnsupportedTableTypeException`. The README covers reading views.
+- REST errors also read Databricks style `error_code` fields and prefer a
+  `google.rpc.ErrorInfo` reason over the generic error code. Every
+  `HttpException` exposes the server's request id (`x-request-id`,
+  `x-ms-request-id` or `x-amz-request-id`) as `requestId` and names it in
+  its message.
+- `FileAction::isExpired()` tells whether a pre-signed URL has passed its
+  expiry.
+- `DeltaSharingClient::VERSION`, sent in the User-Agent header, still read
+  0.2.0 in the 0.2.1 release. It now matches, and a test keeps it in step
+  with this changelog.
+
 ## 0.2.1
 
 Field findings from reading a Databricks (Azure) share.

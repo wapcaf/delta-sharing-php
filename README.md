@@ -111,6 +111,8 @@ print_r($meta->metadata->schema());   // decoded schemaString
 $version = $client->getTableVersion('delta_sharing.default.owid-covid-data');
 ```
 
+Shared views have no version, see [Shared views](#shared-views).
+
 ## Reading data files without decoding them
 
 `queryTable` returns the pre-signed URLs of the parquet files that make up the table. The URLs are short lived but need no extra credentials, so any downstream tool can download them.
@@ -128,6 +130,8 @@ foreach ($result->files as $file) {
 ```
 
 Predicate and limit hints are best effort on the server side. The server may return files containing rows that do not match, so apply your own filtering after reading.
+
+Each file's `expirationTimestamp` (milliseconds since the Unix epoch, when the server sends it) says when its URL stops working, and `$file->isExpired()` checks it.
 
 ## Change data feed
 
@@ -149,18 +153,62 @@ foreach ($changes['actions'] as $action) {
 
 Both `queryTable` and `DeltaSharing::loadAsArray` accept a version number to read a snapshot of the table as of that version. `queryTable` also accepts an ISO 8601 timestamp.
 
-## Error handling and retries
+## Shared views
 
-Transient failures (connection errors, HTTP 429 and 5xx) are retried automatically with exponential backoff and jitter, honouring any Retry-After header. Once retries are exhausted, or for non-retryable errors, a typed exception is thrown:
+Databricks can share views as well as tables. Views are read the same way, through `getTableMetadata`, `queryTable` and `readTable`, but they have no table version or change data feed. Databricks rejects version requests for a view with `DS_UNSUPPORTED_TABLE_TYPE`, which this connector raises as `UnsupportedTableTypeException`:
 
 ```php
-use DeltaSharing\Exception\AuthenticationException;  // 401 / 403
-use DeltaSharing\Exception\NotFoundException;        // 404
-use DeltaSharing\Exception\RateLimitException;       // 429, exposes retryAfterSeconds
-use DeltaSharing\Exception\ServerException;          // 5xx
-use DeltaSharing\Exception\ProtocolException;        // malformed server response
-use DeltaSharing\Exception\HttpException;            // any other HTTP error
-use DeltaSharing\Exception\DeltaSharingException;    // base class of everything above
+use DeltaSharing\Exception\UnsupportedTableTypeException;
+
+try {
+    $version = $client->getTableVersion('my_share.my_schema.my_view');
+} catch (UnsupportedTableTypeException) {
+    $version = null;   // a shared view
+}
+```
+
+The server materialises a view when it is queried, so the first query after the underlying data changes can take a minute or more, while later queries are much faster. If those first queries time out, raise the timeout as shown below.
+
+## Timeouts and retries
+
+`ClientOptions` sets the HTTP behaviour. Every entry point that builds its own client accepts it:
+
+```php
+use DeltaSharing\ClientOptions;
+use DeltaSharing\DeltaSharing;
+use DeltaSharing\DeltaSharingClient;
+
+$options = new ClientOptions(timeout: 300);
+
+$client = DeltaSharingClient::fromProfileFile('config.share', $options);
+$rows = DeltaSharing::loadAsArray('config.share#my_share.my_schema.my_view', options: $options);
+```
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `timeout` | 120 | Seconds to wait for a REST response, including the time the server needs to prepare it |
+| `connectTimeout` | 30 | Seconds to wait for a connection, for REST calls and downloads |
+| `downloadTimeout` | 300 | Seconds allowed for downloading one data file |
+| `maxRetries` | 4 | Retries for connection errors, timeouts, HTTP 429 and HTTP 5xx |
+| `maxTimeoutRetries` | 1 | How many of those retries may follow a timeout |
+
+Transient failures on REST calls are retried with exponential backoff and jitter, honouring any Retry-After header. Timeouts have a smaller budget: a request that timed out may still be running on the server, and a retry starts that work again from scratch, so by default a timeout is retried once and a second timeout is final. The last timeout raises a `TimeoutException`. Data file downloads are not retried.
+
+## Error handling
+
+Once retries are exhausted, or for errors that are not retried, a typed exception is thrown:
+
+```php
+use DeltaSharing\Exception\AuthenticationException;        // 401 / 403
+use DeltaSharing\Exception\NotFoundException;              // 404
+use DeltaSharing\Exception\RateLimitException;             // 429, exposes retryAfterSeconds
+use DeltaSharing\Exception\ServerException;                // 5xx
+use DeltaSharing\Exception\UnsupportedTableTypeException;  // e.g. the version of a shared view
+use DeltaSharing\Exception\DownloadException;              // storage refused a data file download
+use DeltaSharing\Exception\HttpException;                  // any other HTTP error, base of the above
+use DeltaSharing\Exception\TimeoutException;               // no response within the timeout
+use DeltaSharing\Exception\ProtocolException;              // malformed server response
+use DeltaSharing\Exception\DeltaSharingException;          // base class of everything above
 
 try {
     $client->getTableMetadata('my_share.my_schema.missing_table');
@@ -168,6 +216,10 @@ try {
     echo $e->statusCode, ' ', $e->errorCode, ' ', $e->getMessage();
 }
 ```
+
+Every `HttpException` carries the server's request id in `$e->requestId` when one was sent (`x-request-id`, `x-ms-request-id` or `x-amz-request-id`). Data providers ask for it when investigating a failed request.
+
+Data files are downloaded from cloud storage rather than from the sharing server, so a refused download raises `DownloadException` with the storage service's own status, error code and message, for example `FILES_API_AZURE_FORBIDDEN` when Databricks cannot read the storage behind a share. `$e->urlExpired` is true when the pre-signed URL had expired, in which case re-running the query returns fresh URLs. Otherwise the cause lies elsewhere, often storage permissions or network rules on the provider's side. Messages never include a pre-signed URL's query string, because it carries the signature.
 
 Profiles expose their expiry so applications can warn before a token lapses:
 
@@ -186,7 +238,7 @@ if ($profile->expiresWithin(new DateInterval('P7D'))) { /* warn */ }
 | Get Share | yes |
 | List Schemas | yes, with pagination |
 | List Tables / List All Tables | yes, with pagination |
-| Query Table Version | yes |
+| Query Table Version | yes, except for shared views |
 | Query Table Metadata | yes |
 | Query Table (read data) | yes, parquet response format |
 | Read Change Data Feed | yes |
